@@ -101,6 +101,8 @@ namespace Killcraft
                 OncePerPlayer(players, Path.Combine(world, "killcraft-potion-kit2.txt"), GivePotions);
                 // Tools lost to the void (dropped while the player was stuck under the world).
                 OncePerPlayer(players, Path.Combine(world, "killcraft-tools-back.txt"), GiveToolsBack);
+                // Kept worlds get the starting kit's elytra and rockets once too.
+                OncePerPlayer(players, Path.Combine(world, "killcraft-elytra-kit.txt"), GiveElytra);
             }
             catch (Exception e)
             {
@@ -714,12 +716,13 @@ namespace Killcraft
             return false;
         }
 
+        // (The player wears an elytra, with rockets in the hotbar: the iron chestplate waits in the inventory.)
         private static readonly (string id, int count)[] Kit =
         {
-            ("diamond_sword", 1), ("diamond_pickaxe", 1), ("bow", 1), ("cooked_beef", 32), ("oak_planks", 64), ("tnt", 64),
-            ("flint_and_steel", 1), ("cobblestone", 64), ("stone_bricks", 64), ("torch", 32), ("arrow", 64), ("arrow", 64),
+            ("diamond_sword", 1), ("diamond_pickaxe", 1), ("bow", 1), ("firework_rocket", 64), ("cooked_beef", 32), ("oak_planks", 64),
+            ("tnt", 64), ("flint_and_steel", 1), ("cobblestone", 64), ("stone_bricks", 64), ("torch", 32), ("arrow", 64), ("arrow", 64),
             ("oak_log", 64), ("glass", 64), ("oak_stairs", 64), ("oak_slab", 64), ("oak_door", 8), ("ladder", 32),
-            ("lantern", 16), ("crafting_table", 1), ("water_bucket", 1), ("golden_apple", 4),
+            ("lantern", 16), ("crafting_table", 1), ("water_bucket", 1), ("golden_apple", 4), ("iron_chestplate", 1),
         };
 
         private static Nbt Stack(string id, int count, int slot = -1, string ns = "minecraft")
@@ -745,7 +748,7 @@ namespace Killcraft
             root.Set("Inventory", new Nbt(Nbt.TList, items) { ListType = Nbt.TCompound });
             var equipment = Nbt.Compound();
             equipment.Set("head", Stack("iron_helmet", 1));
-            equipment.Set("chest", Stack("iron_chestplate", 1));
+            equipment.Set("chest", Stack("elytra", 1));
             equipment.Set("legs", Stack("iron_leggings", 1));
             equipment.Set("feet", Stack("iron_boots", 1));
             equipment.Set("offhand", Stack("shield", 1));
@@ -815,6 +818,16 @@ namespace Killcraft
                 return false;
             }
             return Give(inventory, new List<(string, int)> { ("minecraft:tnt", 64), ("minecraft:flint_and_steel", 1) }, "TNT and flint and steel");
+        }
+
+        private static bool GiveElytra(Nbt root)
+        {
+            Nbt inventory = root.Get("Inventory");
+            if (inventory == null || inventory.Type != Nbt.TList)
+            {
+                return false;
+            }
+            return Give(inventory, new List<(string, int)> { ("minecraft:elytra", 1), ("minecraft:firework_rocket", 64) }, "an elytra and firework rockets");
         }
 
         // Puts stacks in the first free slots (hotbar first).

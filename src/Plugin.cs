@@ -7,7 +7,9 @@ using UnityEngine.SceneManagement;
 
 namespace Killcraft
 {
-    [BepInPlugin("dev.killcraft", "Killcraft", "1.0.2")]
+    // (Killcraft's plugin id, a newer version: BepInEx loads ULTRA-CRAFT instead of a Killcraft left installed,
+    // and the settings stay in dev.killcraft.cfg.)
+    [BepInPlugin("dev.killcraft", "UltraCraft", "2.0.0")]
     public sealed class Plugin : BaseUnityPlugin
     {
         internal static ManualLogSource Log;
@@ -23,6 +25,13 @@ namespace Killcraft
         internal static ConfigEntry<bool> DigIntoLevels;
         internal static ConfigEntry<bool> FreshWorld;
         internal static ConfigEntry<string> ToggleKey;
+        internal static ConfigEntry<string> BuildKey;
+        internal static ConfigEntry<string> MenuKey;
+        internal static ConfigEntry<string> StartMode;
+        internal static ConfigEntry<bool> MinecraftStyle;
+        internal static ConfigEntry<bool> UltrakillLight;
+        internal static ConfigEntry<float> LightDarkest;
+        internal static ConfigEntry<float> LightStrength;
         internal static ConfigEntry<bool> MobsFightEnemies;
         internal static ConfigEntry<bool> AlwaysThorns;
         internal static ConfigEntry<bool> MobsAttackYouInLevels;
@@ -81,10 +90,28 @@ namespace Killcraft
             DiscordAppId = Config.Bind("Discord", "ApplicationId", "",
                 "Your Discord status while playing. Empty: Killcraft's. Or another Discord application's id; skycraft: SkyCraft's own status; 0: none. Applied when Minecraft starts.");
             ToggleKey = Config.Bind("Controls", "ToggleMinecraft", "F9",
-                "Key that turns Minecraft off (V1 is plain ULTRAKILL again; Minecraft's player waits) and back on. A Unity Input System key name, e.g. F9, F10, Backquote.");
+                "Key that opens the mode menu: Hybrid (ULTRAKILL's guns, movement and style, plus Minecraft's blocks with the build key), " +
+                "Minecraft (Minecraft's player has V1) and ULTRAKILL (plain ULTRAKILL; Minecraft's player waits). A Unity Input System key name, e.g. F9, F10, Backquote.");
+            BuildKey = Config.Bind("Controls", "BuildKey", "X",
+                "Hybrid mode: key that puts ULTRAKILL's guns away and takes out Minecraft's hotbar (blocks, TNT, swords, bows, ...), and back. " +
+                "While building, the mouse buttons, the wheel, 1-9, E, Q and F are Minecraft's; you still move, dash, slide and jump like V1.");
+            MenuKey = Config.Bind("Controls", "MinecraftMenuKey", "O",
+                "Key that opens Minecraft's menu: Options, Controls, Key Binds (Minecraft's own key binds are kept between sessions). " +
+                "Works in Minecraft and Hybrid mode. Esc is always ULTRAKILL's pause menu.");
+            StartMode = Config.Bind("Controls", "StartMode", "Hybrid",
+                "The mode a session starts in: Hybrid, Minecraft or Ultrakill.");
+            MinecraftStyle = Config.Bind("Combat", "MinecraftStyle", true,
+                "Kills with Minecraft's weapons, fire and mobs get an extra Minecraft bonus on ULTRAKILL's style meter (+MINECRAFTED, +ARROWED, +SMELTED, +CRITICAL HIT, ...).");
+            UltrakillLight = Config.Bind("Lighting", "UltrakillLightOnMinecraft", true,
+                "ULTRAKILL's lights shine on what Minecraft draws: your hand and held item, your player in third person (F5), mobs and " +
+                "dropped items. Coloured rooms tint them, they get darker in the dark, and muzzle flashes and explosions light them up, as on V1's arm.");
+            LightDarkest = Config.Bind("Lighting", "Darkest", 0.35f,
+                "How dark Minecraft's hand, player and mobs get with no ULTRAKILL light on them (0 black, 1 never darker).");
+            LightStrength = Config.Bind("Lighting", "Strength", 1.0f,
+                "How strongly ULTRAKILL's light counts: higher reaches full brightness under dimmer lights.");
             Diagnostics = Config.Bind("Debug", "Diagnostics", false, "Extra logging (collision sources, timings).");
 
-            new Harmony("dev.killcraft").PatchAll(typeof(Plugin).Assembly);
+            new Harmony("dev.ultracraft").PatchAll(typeof(Plugin).Assembly);
 
             EnsureHost();
             // ULTRAKILL's scene loader disables every script that isn't in the DontDestroyOnLoad

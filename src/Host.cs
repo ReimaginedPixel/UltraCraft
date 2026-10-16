@@ -61,6 +61,16 @@ namespace Killcraft
 
         internal static Host Current;
 
+        private void Awake()
+        {
+            // Hybrid: ULTRAKILL has V1 (its guns, movement, health and style), Minecraft's player follows it
+            // as with Minecraft off, and the build key lends Minecraft the hands (its hotbar, blocks, TNT).
+            string start = (Plugin.StartMode.Value ?? "").Trim().ToLowerInvariant();
+            mcDisabled = start != "minecraft";
+            hybrid = start != "minecraft" && start != "ultrakill";
+            Plugin.Log.LogInfo($"starting in {(hybrid ? "Hybrid" : mcDisabled ? "ULTRAKILL" : "Minecraft")} mode");
+        }
+
         private void Update()
         {
             Current = this;
@@ -131,36 +141,57 @@ namespace Killcraft
             bool paused = options != null && options.paused;
             pausedNow = paused;
 
-            // The toggle key: Minecraft off (plain ULTRAKILL, Minecraft's player waits where it is) or
-            // back on (Minecraft's player comes to V1 and takes over again).
-            var keyboard = UnityEngine.InputSystem.Keyboard.current;
+            // The toggle key opens the mode menu: Hybrid, Minecraft (Minecraft's player comes to V1 and
+            // takes over) or plain ULTRAKILL (Minecraft's player waits where it is).
+            bool mcScreenOwned = (Patches.OwnsPlayer || building) && Patches.McScreenOpen;
             bool togglePressed = ToggleKey();
-            if (togglePressed && !(inGame && !paused && !(Patches.OwnsPlayer && Patches.McScreenOpen)))
+            bool menuAllowed = inGame && !paused && !mcScreenOwned && !loading && !nm.dead && !Combat.OwnedDeath;
+            if (ModeMenu.IsOpen)
             {
-                Plugin.Log.LogInfo($"{Plugin.ToggleKey.Value} pressed but ignored: in a level {inGame}, paused {paused}, a Minecraft screen open {Patches.OwnsPlayer && Patches.McScreenOpen}");
-            }
-            if (togglePressed && inGame && !paused && !(Patches.OwnsPlayer && Patches.McScreenOpen))
-            {
-                toggleNotice = 3f;
-                // (In the Nether only over ground: there it's Killcraft's colliders from Minecraft's blocks
-                // around V1, kept loaded by Minecraft's player following V1 about.)
-                toggleRefused = Coords.InNether && !mcDisabled
-                    && !Physics.Raycast(nm.transform.position, Vector3.down, 24f * Coords.U, 1 << 8, QueryTriggerInteraction.Ignore);
-                if (!toggleRefused)
+                if (!menuAllowed)
                 {
-                    mcDisabled = !mcDisabled;
-                    Plugin.Log.LogInfo(mcDisabled ? "Minecraft turned off: ULTRAKILL has V1" : "Minecraft turned back on");
-                    if (mcDisabled)
+                    ModeMenu.Close();
+                }
+                else
+                {
+                    int picked = ModeMenu.Frame(togglePressed);
+                    if (picked >= 0)
                     {
-                        everPuppet = false;  // when it comes back, V1 lands first, as at a level start
-                    }
-                    else
-                    {
-                        needResync = true;
+                        SetMode(picked, nm);
                     }
                 }
             }
+            else if (togglePressed && menuAllowed)
+            {
+                ModeMenu.Open(CurrentMode, BuildKey.ToString());
+            }
+            else if (togglePressed)
+            {
+                Plugin.Log.LogInfo($"{Plugin.ToggleKey.Value} pressed but ignored: in a level {inGame}, paused {paused}, a Minecraft screen open {mcScreenOwned}");
+            }
             toggleNotice -= Time.unscaledDeltaTime;
+
+            // The build key (Hybrid): ULTRAKILL's guns and arm go away and Minecraft's hand and hotbar come
+            // out, and back. Anything that takes V1 away (dying, a cutscene, a load, another mode) ends it.
+            // (Combat.FollowerAway: last frame's, Minecraft's player still on its way to V1.)
+            bool keepBuilding = hybrid && mcDisabled && inGame && !loading && haveMc && mcInWorld && !nm.dead && nm.activated && !Combat.FollowerAway;
+            InputForward.BuildKey = BuildKey;
+            InputForward.MenuKey = MenuKey;
+            bool buildPressed = Pressed(BuildKey);
+            if (building && !keepBuilding)
+            {
+                SetBuilding(false);
+            }
+            else if (buildPressed && keepBuilding && !paused && !screenOpen && !McCommand.Busy)
+            {
+                SetBuilding(!building);
+            }
+            // Minecraft's menu (options, key binds) from Hybrid: Minecraft's hands come out for it, and
+            // InputForward, routing from now, opens it with this same press.
+            else if (!building && keepBuilding && !paused && !screenOpen && !McCommand.Busy && Pressed(MenuKey))
+            {
+                SetBuilding(true);
+            }
 
             // A new level is a new world: Minecraft drops all collision and the player is placed again.
             string scene = SceneHelper.CurrentScene;
@@ -222,7 +253,7 @@ namespace Killcraft
             // Nether at the level's coordinates, it's sent back to its landing, not a trip.)
             bool dimensionKnown = Time.unscaledTime - Combat.DimensionAt < 2f;
             bool atNetherX = haveMc && Coords.IsNetherX(mc.X);
-            if (haveMc && mcInWorld && !diedInNether && atNetherX != Coords.InNether && (!dimensionKnown || Combat.DimensionNether == atNetherX))
+            if (haveMc && mcInWorld && !diedInNether && !Combat.OwnedDeath && atNetherX != Coords.InNether && (!dimensionKnown || Combat.DimensionNether == atNetherX))
             {
                 Coords.SetNether(!Coords.InNether);
                 WorldRender.Reposition();
@@ -246,7 +277,7 @@ namespace Killcraft
                 }
             }
             // Where Minecraft's player last was in the level (alive): where it comes back to.
-            if (haveMc && mcInWorld && !mcDead && !Coords.InNether && !diedInNether && !Coords.IsNetherX(mc.X)
+            if (haveMc && mcInWorld && !mcDead && !Combat.OwnedDeath && !Coords.InNether && !diedInNether && !Coords.IsNetherX(mc.X)
                 && !(dimensionKnown && Combat.DimensionNether))
             {
                 levelX = mc.X;
@@ -276,6 +307,44 @@ namespace Killcraft
                 leaveNetherTimer = 5f;
                 Plugin.Log.LogInfo("V1 is in the level but Minecraft's player is in the Nether: sending it back through its portal");
                 Destruction.LeaveNether();
+            }
+
+            // Minecraft's player died while it had V1 (Combat.OwnedDeath; SkyCraft respawns it at once):
+            // a Minecraft death screen (DeathScreen) over the stopped game, with Minecraft's new player
+            // held where it is (SkyLoading) and V1 where it was. Respawn restarts ULTRAKILL from its last
+            // checkpoint, as dying in ULTRAKILL would, and Minecraft's player is put there: no ULTRAKILL
+            // death sequence in between, and Minecraft keeps V1 (no flash of ULTRAKILL's HUD).
+            if (Combat.OwnedDeath)
+            {
+                if (!inGame || loading || !haveMc || nm.dead || mcDisabled)
+                {
+                    Combat.OwnedDeath = false;
+                    DeathScreen.Hide();
+                }
+                else
+                {
+                    StatsManager stats = MonoSingleton.GetInstance(typeof(StatsManager)) as StatsManager;
+                    if (!DeathScreen.IsOpen)
+                    {
+                        DeathScreen.Show(stats != null ? stats.stylePoints : 0);
+                    }
+                    if (DeathScreen.Frame())
+                    {
+                        DeathScreen.Hide();
+                        Combat.OwnedDeath = false;
+                        if (stats != null && !stats.infoSent)
+                        {
+                            Plugin.Log.LogInfo("Respawn: ULTRAKILL restarts from its last checkpoint");
+                            stats.Restart();
+                        }
+                        teleportPending = true;
+                        haveLastSet = false;
+                    }
+                }
+            }
+            else if (DeathScreen.IsOpen)
+            {
+                DeathScreen.Hide();
             }
 
             // ULTRAKILL moved V1 itself (checkpoint, respawn, level script): Minecraft follows. Those
@@ -334,7 +403,7 @@ namespace Killcraft
             bool follow = Coords.InNether
                 ? !mcLeftInNether && !ultrakillTakes
                 : (puppet || (crossed && !ultrakillTakes)) && !teleportPending && mc.TeleportAck == teleportSeq;
-            if (away && follow && !nm.dead && !mcDead && !ultrakillDrives)
+            if (away && follow && !nm.dead && !mcDead && !ultrakillDrives && !Combat.OwnedDeath)
             {
                 Plugin.Log.LogInfo($"Minecraft's player moved itself to ({mc.X:0.0}, {mc.Y:0.0}, {mc.Z:0.0}): V1 follows");
                 away = false;
@@ -365,7 +434,12 @@ namespace Killcraft
             {
                 teleportPending = false;  // (its own moves are this)
             }
-            if (ultrakillDrives || netherFree)
+            // Following V1 from far off (Hybrid from the start, a new level, a checkpoint far back): one
+            // jump there would freeze Minecraft's server (see NextStep), so it goes from waypoint to
+            // waypoint first (StepTowards), and follows V1 directly once near.
+            bool followFar = netherFree && !Coords.InNether && haveMc
+                && (Math.Abs(mc.X - tx) > 32 || Math.Abs(mc.Y - ty) > 32 || Math.Abs(mc.Z - tz) > 32);
+            if (ultrakillDrives || (netherFree && !followFar))
             {
                 // V1's real feet (its collider shrinks while sliding, so not a fixed offset): Minecraft's
                 // player put even a little into the floor crawls, its eye at the ground.
@@ -420,7 +494,8 @@ namespace Killcraft
                 Coords.ToMc(top, out tx, out ty, out tz);
                 teleportSeq++;
             }
-            StepTowards(away, inGame && !loading && !ultrakillTakes && !nm.dead && !Coords.InNether, tx, ty, tz);
+            StepTowards(away, inGame && !loading && (!ultrakillTakes || followFar) && !nm.dead && !Coords.InNether && !Combat.OwnedDeath, tx, ty, tz);
+            Combat.FollowerAway = followFar;
 
             arriving = haveMc && mcInWorld && inGame && !loading && (mc.TeleportAck != teleportSeq || away) && !ultrakillTakes;
             // (While ULTRAKILL moves V1 its teleports are only just sent: Minecraft still has the player.)
@@ -451,25 +526,30 @@ namespace Killcraft
                 nm.deathSequence.gameObject.SetActive(false);
             }
             Patches.OwnsPlayer = controlled != null;
+            Patches.Building = building;
             // (A Minecraft screen open, as typing a command or the inventory: the keys are Minecraft's.)
-            Lockout.Frame(controlled != null, ultrakillDrives && !screenOpen);
+            // Building, ULTRAKILL keeps its movement keys: V1 dashes, slides and jumps while it builds.
+            Lockout.Frame(controlled != null || building, (ultrakillDrives || building) && !screenOpen);
             HeldItems.Frame(controlled != null, nm != null ? nm.cc : null);
             HurtZones.Frame(nm, controlled != null && nm != null && nm.rb != null && nm.rb.isKinematic && inGame && !loading);
             // (Also when ULTRAKILL has V1 — toggled off, dead: Minecraft's mobs and TNT carry on otherwise.)
-            FreezeMinecraft(paused && inGame);
+            // (The mode menu stops the game too.)
+            FreezeMinecraft((paused || ModeMenu.IsOpen || DeathScreen.IsOpen) && inGame);
             // The chat McCommand opens isn't a Minecraft screen the player has open: Esc still belongs to
             // ULTRAKILL's menu.
             Patches.McScreenOpen = screenOpen && !McCommand.Busy;
 
             // (Respawning puts Minecraft's player at its spawn point: Killcraft's data pack keeps that
             // where the player last stood, so a death is a short move. See McSave.)
-            InputForward.UltrakillMoves = ultrakillDrives && !screenOpen;
-            InputForward.Frame(controlled != null && puppet && !paused && !McCommand.Busy, screenOpen, Screen.width, Screen.height);
+            InputForward.UltrakillMoves = (ultrakillDrives || building) && !screenOpen;
+            InputForward.Building = building;
+            InputForward.Frame(((controlled != null && puppet) || building) && !paused && !ModeMenu.IsOpen && !DeathScreen.IsOpen && !McCommand.Busy, screenOpen, Screen.width, Screen.height);
             // (Also while Minecraft is on its way to V1, as through a Nether portal: no flash of ULTRAKILL's HUD.)
             HudHider.Frame(controlled != null, nm);
             // (Before Combat publishes the damage requests MobHits makes.)
             MobHits.Frame(mcDisabled && inGame && !loading && haveMc && mcInWorld && !nm.dead, haveMc ? Coords.ToUnity(mc.X, mc.Y, mc.Z) : Vector3.zero);
-            Combat.Frame(alive && inGame && mcInWorld && !mcDisabled, inGame && haveMc && mcInWorld, netherFree, nm);
+            // (Hybrid too: Minecraft's swords, bows, TNT and mobs hit ULTRAKILL's enemies.)
+            Combat.Frame(alive && inGame && mcInWorld && (!mcDisabled || hybrid), inGame && haveMc && mcInWorld, netherFree, nm);
             while (Link.PopEvent(out McEvent e))
             {
                 Combat.Handle(e, nm);
@@ -487,7 +567,8 @@ namespace Killcraft
                     // (Not with Minecraft off (F9): its player follows V1, and in between, as in a Nether
                     // portal, just stands. Held, SkyCraft would keep holding it at that spot after the
                     // portal took it, the level's coordinates in the Nether.)
-                    | (loading || (!diedInNether && ((ultrakillTakes && !mcDisabled) || (nm != null && nm.dead) || (inGame && !(haveMc && mcInWorld)))) ? Proto.SkyLoading : 0),
+                    // (Minecraft's player respawned after dying in Minecraft mode: held until Respawn.)
+                    | (loading || Combat.OwnedDeath || (!diedInNether && ((ultrakillTakes && !mcDisabled) || (nm != null && nm.dead) || (inGame && !(haveMc && mcInWorld)))) ? Proto.SkyLoading : 0),
                 WorldId = worldId,
                 Epoch = (uint)epoch,
                 TeleportSeq = teleportSeq,
@@ -546,6 +627,10 @@ namespace Killcraft
                 lastUnityYaw = cc.rotationY;
                 sky.Yaw = mcYaw;
                 sky.Pitch = Coords.PitchToMc(cc.rotationX);
+                if (building && haveMc && mcInWorld)
+                {
+                    AimAtCrosshair(cc, ref sky.Yaw, ref sky.Pitch);
+                }
             }
             Link.WriteSkyState(sky);
 
@@ -554,7 +639,20 @@ namespace Killcraft
             {
                 if (puppet)
                 {
-                    Collision.Update(mc.X, mc.Y, mc.Z);
+                    // Flying fast (an elytra with rockets is 30 blocks a second): the level's collision
+                    // ahead of the player is sent first, about 3/4 of a second's worth, or it would fly
+                    // into walls Minecraft doesn't have yet. (Within the area sent around the centre,
+                    // so where the player is now stays covered.)
+                    double vx = mc.CurX - mc.PrevX, vy = mc.CurY - mc.PrevY, vz = mc.CurZ - mc.PrevZ;
+                    double speed2 = vx * vx + vy * vy + vz * vz;
+                    double ax = 0, ay = 0, az = 0;
+                    if (speed2 > 0.36 && speed2 < 16)  // (over 12 blocks a second; not a teleport)
+                    {
+                        ax = Math.Max(-20, Math.Min(20, vx * 15));
+                        ay = Math.Max(-10, Math.Min(10, vy * 15));
+                        az = Math.Max(-20, Math.Min(20, vz * 15));
+                    }
+                    Collision.Update(mc.X + ax, mc.Y + ay, mc.Z + az);
                 }
                 else
                 {
@@ -614,8 +712,9 @@ namespace Killcraft
             }
             FreezeWanted = mcFrozen;
             // Its sound is off while paused, and while ULTRAKILL has V1 (F9): then Minecraft's player
-            // only follows V1 about, and its steps, swings and burning would be noise.
-            bool mute = mcFrozen || (mcDisabled && inGame);
+            // only follows V1 about, and its steps, swings and burning would be noise. (Not in Hybrid:
+            // there its blocks, TNT and mobs are part of the fight.)
+            bool mute = mcFrozen || (mcDisabled && inGame && !hybrid);
             if (mute != mcMuted && haveMc)
             {
                 mcMuted = mute;
@@ -808,6 +907,94 @@ namespace Killcraft
             Plugin.Log.LogInfo(on ? "ULTRAKILL's movement moves V1 (Potion of ULTRAKILL or a launch)" : "Minecraft moves V1 again");
         }
 
+        // Hybrid's building: Minecraft's hand instead of ULTRAKILL's guns and arm (Lockout puts those
+        // away while it lasts; they come back here). V1 stays ULTRAKILL's.
+        private bool hybrid, building;
+
+        private void SetBuilding(bool on)
+        {
+            if (on == building)
+            {
+                return;
+            }
+            building = on;
+            Patches.Building = on;
+            InputForward.Building = on;
+            // Minecraft's buttons held now would stay held (or ULTRAKILL's fire would carry on).
+            Link.PushInput(Proto.InReleaseAll);
+            if (!on)
+            {
+                try
+                {
+                    Find<GunControl>()?.YesWeapon();
+                    Find<FistControl>()?.YesFist();
+                }
+                catch (Exception e)
+                {
+                    Plugin.Log.LogWarning($"restoring weapons after building: {e.Message}");
+                }
+            }
+            Plugin.Log.LogInfo(on ? "building: Minecraft's hotbar out, ULTRAKILL's guns away" : "done building: ULTRAKILL's guns out");
+        }
+
+        // Minecraft's player sees from its own eye (1.62 blocks over its feet), V1 from its camera, a bit
+        // lower: while building, Minecraft's player is turned to look at what ULTRAKILL's crosshair is on
+        // (a wall, the floor, a block, an enemy), so blocks go where V1 aims, not a little above.
+        private const int AimMask = CameraBlockers | (1 << 10) | (1 << 11);
+
+        private void AimAtCrosshair(CameraController cc, ref float yaw, ref float pitch)
+        {
+            float eye = mc.EyeHeight > 0f ? mc.EyeHeight : 1.62f;
+            Vector3 mcEye = Coords.ToUnity(mc.X, mc.Y + eye, mc.Z);
+            Vector3 from = cc.transform.position;
+            // (Not while Minecraft's player is still catching up with V1: aiming from far off is worse.)
+            if ((mcEye - from).sqrMagnitude > 2f * Coords.U * 2f * Coords.U)
+            {
+                return;
+            }
+            Vector3 dir = Quaternion.Euler(-cc.rotationX, cc.rotationY, 0f) * Vector3.forward;
+            float reach = 8f * Coords.U;
+            Vector3 target = Physics.Raycast(from, dir, out RaycastHit hit, reach, AimMask, QueryTriggerInteraction.Ignore)
+                ? hit.point : from + dir * reach;
+            Vector3 aim = target - mcEye;
+            if (aim.sqrMagnitude < 0.0001f)
+            {
+                return;
+            }
+            aim.Normalize();
+            yaw += Mathf.DeltaAngle(cc.rotationY, Mathf.Atan2(aim.x, aim.z) * Mathf.Rad2Deg);
+            pitch = Coords.PitchToMc(Mathf.Asin(Mathf.Clamp(aim.y, -1f, 1f)) * Mathf.Rad2Deg);
+        }
+
+        private UnityEngine.InputSystem.Key buildKey, menuKey;
+
+        internal UnityEngine.InputSystem.Key BuildKey => ConfigKey(ref buildKey, Plugin.BuildKey.Value, UnityEngine.InputSystem.Key.X);
+
+        internal UnityEngine.InputSystem.Key MenuKey => ConfigKey(ref menuKey, Plugin.MenuKey.Value, UnityEngine.InputSystem.Key.O);
+
+        private static UnityEngine.InputSystem.Key ConfigKey(ref UnityEngine.InputSystem.Key cached, string name, UnityEngine.InputSystem.Key fallback)
+        {
+            if (cached == UnityEngine.InputSystem.Key.None
+                && (!Enum.TryParse(name, true, out cached) || cached == UnityEngine.InputSystem.Key.None))
+            {
+                cached = fallback;
+            }
+            return cached;
+        }
+
+        // Pressed this frame on any keyboard Unity knows (see ToggleKey).
+        private static bool Pressed(UnityEngine.InputSystem.Key key)
+        {
+            foreach (UnityEngine.InputSystem.InputDevice device in UnityEngine.InputSystem.InputSystem.devices)
+            {
+                if (device is UnityEngine.InputSystem.Keyboard kb && kb.enabled && kb[key] is var control && control != null && control.wasPressedThisFrame)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private void SetControl(NewMovement nm)
         {
             if (ultrakillDrives)
@@ -870,10 +1057,15 @@ namespace Killcraft
             {
                 WorldRender.DebugCycle();
             }
-            Overlay.Frame(haveMc && mcInWorld && controlled != null && !mcFrozen && !McCommand.Busy);
+            NewMovement v1 = Find<NewMovement>();
+            // ULTRAKILL's light on Minecraft's hand (not with a Minecraft screen open, nor in its third
+            // person, where it draws no hand).
+            UkLighting.Frame();
+            bool handShown = haveMc && mcInWorld && !screenOpen && mc.CameraMode == 0 && v1 != null && v1.cc != null;
+            Color handLight = handShown ? UkLighting.Hand(v1.cc.cam) : Color.white;
+            Overlay.Frame(haveMc && mcInWorld && (controlled != null || building) && !mcFrozen && !McCommand.Busy, handLight, (int)mc.GuiScale);
             WorldRender.Frame(haveMc && mcInWorld && inGame);
             MoveV1();
-            NewMovement v1 = Find<NewMovement>();
             bool v1InNether = inGame && Coords.InNether && v1 != null && Coords.IsNetherUnity(v1.transform.position);
             Nether.Frame(v1InNether, v1 != null ? v1.cc : null);
             NetherWorld.Frame(v1InNether && (puppet || netherFree) && !mcFrozen && !v1.dead, v1 != null ? v1.transform.position : Vector3.zero);
@@ -892,7 +1084,7 @@ namespace Killcraft
             {
                 lastSetRoot = controlled.transform.position;  // ULTRAKILL moves it; Minecraft follows (Update)
             }
-            else if (puppet)
+            else if (puppet && !Combat.OwnedDeath)
             {
                 Interpolate(out double fx, out double fy, out double fz, out double eye);
                 lastFeet = Coords.ToUnity(fx, fy, fz);
@@ -945,6 +1137,42 @@ namespace Killcraft
 
         private bool mcDisabled, toggleRefused;
         private float toggleNotice;
+
+        private int CurrentMode => hybrid ? ModeMenu.Hybrid : mcDisabled ? ModeMenu.Ultrakill : ModeMenu.Minecraft;
+
+        // A mode picked in the mode menu.
+        private void SetMode(int mode, NewMovement nm)
+        {
+            int was = CurrentMode;
+            toggleNotice = 3f;
+            // (Leaving Minecraft mode in the Nether only over ground: there it's Killcraft's colliders from
+            // Minecraft's blocks around V1, kept loaded by Minecraft's player following V1 about.)
+            toggleRefused = was == ModeMenu.Minecraft && mode != ModeMenu.Minecraft && Coords.InNether
+                && !Physics.Raycast(nm.transform.position, Vector3.down, 24f * Coords.U, 1 << 8, QueryTriggerInteraction.Ignore);
+            if (toggleRefused || mode == was)
+            {
+                return;
+            }
+            if (mode == ModeMenu.Minecraft)
+            {
+                hybrid = false;
+                mcDisabled = false;
+                needResync = true;
+                // (Minecraft takes V1 once it stands on something, as at a level start: picked mid-jump,
+                // Minecraft's player would be put up there and fall, with Minecraft's fall damage.)
+                everPuppet = false;
+                Plugin.Log.LogInfo("Minecraft mode: Minecraft has V1");
+                return;
+            }
+            if (was == ModeMenu.Minecraft)
+            {
+                everPuppet = false;  // when it comes back, V1 lands first, as at a level start
+            }
+            mcDisabled = true;
+            // (Hybrid: ULTRAKILL keeps V1, and Minecraft's player goes on following it.)
+            hybrid = mode == ModeMenu.Hybrid;
+            Plugin.Log.LogInfo(hybrid ? "Hybrid mode: ULTRAKILL has V1, Minecraft builds" : "ULTRAKILL mode: Minecraft turned off");
+        }
         private UnityEngine.InputSystem.Key toggleKey = UnityEngine.InputSystem.Key.None;
 
         // The toggle key, on any keyboard Unity knows (keyboard software, as Razer's, adds keyboards of
@@ -1003,36 +1231,41 @@ namespace Killcraft
         {
             if (toggleNotice > 0f && toggleRefused)
             {
-                return "Killcraft: Minecraft can only be turned off in the Nether while standing on ground";
+                return "ULTRA-CRAFT: Minecraft can only be turned off in the Nether while standing on ground";
             }
             if (toggleNotice > 0f)
             {
-                return mcDisabled
-                    ? $"Killcraft: Minecraft off, plain ULTRAKILL ({Plugin.ToggleKey.Value} turns it back on)"
-                    : "Killcraft: Minecraft back on";
+                return hybrid ? $"HYBRID - ULTRAKILL's guns and movement, {BuildKey} takes out Minecraft's blocks ({Plugin.ToggleKey.Value}: modes)"
+                    : mcDisabled ? $"ULTRAKILL - Minecraft waits in the background ({Plugin.ToggleKey.Value}: modes)"
+                    : $"MINECRAFT - you're the Minecraft player ({Plugin.ToggleKey.Value}: modes)";
             }
-            if (mcDisabled)
+            if (building)
+            {
+                return $"BUILDING - {BuildKey}: back to the guns";
+            }
+            // (Hybrid builds with Minecraft: whether it's there yet is still worth saying.)
+            if (mcDisabled && !hybrid)
             {
                 return null;
             }
             if (!Link.Ready)
             {
-                return "Killcraft: couldn't create the shared memory (see BepInEx/LogOutput.log)";
+                return "ULTRA-CRAFT: couldn't create the shared memory (see BepInEx/LogOutput.log)";
             }
             if (!mcWasAlive)
             {
                 switch (Launcher.State)
                 {
                     case Launcher.Status.SignIn:
-                        return "Killcraft: sign in to your Microsoft account in the Prism Launcher window (first time only), then Minecraft starts by itself";
+                        return "ULTRA-CRAFT: sign in to your Microsoft account in the Prism Launcher window (first time only), then Minecraft starts by itself";
                     case Launcher.Status.Starting:
-                        return "Killcraft: starting Minecraft... (the first launch downloads Minecraft and Java and takes a few minutes)";
+                        return "ULTRA-CRAFT: starting Minecraft... (the first launch downloads Minecraft and Java and takes a few minutes)";
                     case Launcher.Status.NoLauncher:
-                        return "Killcraft: no Minecraft to start: put SkyCraft-Minecraft.zip in BepInEx/plugins/Killcraft";
+                        return "ULTRA-CRAFT: no Minecraft to start: put SkyCraft-Minecraft.zip in BepInEx/plugins/UltraCraft";
                     case Launcher.Status.Failed:
-                        return "Killcraft: starting Minecraft failed (see BepInEx/LogOutput.log)";
+                        return "ULTRA-CRAFT: starting Minecraft failed (see BepInEx/LogOutput.log)";
                     default:
-                        return "Killcraft: waiting for Minecraft (the SkyCraft instance in Prism Launcher)";
+                        return "ULTRA-CRAFT: waiting for Minecraft (the SkyCraft instance in Prism Launcher)";
                 }
             }
             if (!inGame)
@@ -1041,11 +1274,11 @@ namespace Killcraft
             }
             if (!mcInWorld)
             {
-                return "Killcraft: Minecraft is opening its world...";
+                return "ULTRA-CRAFT: Minecraft is opening its world...";
             }
             if (arriving && !ultrakillDrives)
             {
-                return $"Killcraft: sending the level to Minecraft ({Collision.SentRegions} regions)...";
+                return $"ULTRA-CRAFT: sending the level to Minecraft ({Collision.SentRegions} regions)...";
             }
             return null;
         }
@@ -1062,7 +1295,7 @@ namespace Killcraft
                 GUI.color = Color.white;
                 GUI.Label(r, text, style);
             }
-            if (controlled != null && screenOpen)
+            if ((controlled != null || building) && screenOpen)
             {
                 // Minecraft draws no cursor of its own into the overlay.
                 white ??= Texture2D.whiteTexture;

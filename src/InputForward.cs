@@ -16,6 +16,65 @@ namespace Killcraft
         public static bool UsingItem;
         // A Potion of ULTRAKILL: the movement keys are ULTRAKILL's (walk, jump, dash, slide), not Minecraft's.
         public static bool UltrakillMoves;
+        // Hybrid's building (Host): the build key is Killcraft's, and F5 stays first person (ULTRAKILL's
+        // camera only follows Minecraft's third person while Minecraft has V1).
+        public static bool Building;
+        public static Key BuildKey = Key.X;
+        // Opens Minecraft's menu (its options and key binds) instead of going to Minecraft (Plugin.MenuKey).
+        public static Key MenuKey = Key.O;
+
+        // What ULTRAKILL's movement (walk, jump, dash, slide) is bound to, as set in its options: those
+        // stay ULTRAKILL's while it moves V1 (building, a Potion of ULTRAKILL). SDL mouse buttons too.
+        private static readonly HashSet<Key> moveKeys = new HashSet<Key>();
+        private static readonly HashSet<ushort> moveButtons = new HashSet<ushort>();
+        private static float moveKeysAt = -100f;
+
+        private static void RefreshMoveKeys()
+        {
+            if (Time.unscaledTime - moveKeysAt < 2f)
+            {
+                return;
+            }
+            moveKeysAt = Time.unscaledTime;
+            moveKeys.Clear();
+            moveButtons.Clear();
+            try
+            {
+                if (MonoSingleton.GetInstance(typeof(InputManager)) is InputManager input && input.InputSource?.Actions != null)
+                {
+                    foreach (InputAction action in input.InputSource.Actions.Movement.Get().actions)
+                    {
+                        if (action == null || action.name == "Look")
+                        {
+                            continue;
+                        }
+                        foreach (InputControl control in action.controls)
+                        {
+                            if (control is KeyControl k)
+                            {
+                                moveKeys.Add(k.keyCode);
+                            }
+                            else if (control.device is Mouse m)
+                            {
+                                if (control == m.leftButton) moveButtons.Add(1);
+                                else if (control == m.middleButton) moveButtons.Add(2);
+                                else if (control == m.rightButton) moveButtons.Add(3);
+                                else if (control == m.backButton) moveButtons.Add(4);
+                                else if (control == m.forwardButton) moveButtons.Add(5);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (System.Exception e)
+            {
+                Plugin.Log.LogWarning($"reading ULTRAKILL's movement keys: {e.Message}");
+            }
+            if (moveKeys.Count == 0)
+            {
+                moveKeys.UnionWith(new[] { Key.W, Key.A, Key.S, Key.D, Key.Space, Key.LeftShift, Key.LeftCtrl });
+            }
+        }
         private static bool routing;
         private static bool wasScreenOpen;
         private static Vector2 cursor;
@@ -40,6 +99,10 @@ namespace Killcraft
                 return;
             }
             routing = true;
+            if (UltrakillMoves)
+            {
+                RefreshMoveKeys();
+            }
             Keyboard keyboard = Keyboard.current;
             Mouse mouse = Mouse.current;
             if (keyboard != null && !textHooked)
@@ -71,8 +134,7 @@ namespace Killcraft
                     // (F5 too: Minecraft's third person, which Host follows with ULTRAKILL's camera.)
                     if (!screenOpen)
                     {
-                        if (UltrakillMoves && (key == Key.W || key == Key.A || key == Key.S || key == Key.D || key == Key.Space
-                            || key == Key.LeftShift || key == Key.LeftCtrl))
+                        if (UltrakillMoves && moveKeys.Contains(key))
                         {
                             continue;
                         }
@@ -80,7 +142,11 @@ namespace Killcraft
                         {
                             continue;
                         }
-                        if (key == Key.O)
+                        if (Building && (key == BuildKey || key == Key.F5))
+                        {
+                            continue;
+                        }
+                        if (key == MenuKey)
                         {
                             if (down)
                             {
@@ -145,7 +211,8 @@ namespace Killcraft
 
         private static void Button(ButtonControl button, ushort sdl)
         {
-            if (button == null)
+            // (A mouse button ULTRAKILL moves with, as jump on a side button, while it moves V1.)
+            if (button == null || (UltrakillMoves && !screenOpenNow && moveButtons.Contains(sdl)))
             {
                 return;
             }

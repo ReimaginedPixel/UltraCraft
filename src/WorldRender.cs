@@ -476,7 +476,7 @@ namespace Killcraft
         private static readonly List<List<int>> sIdx = new List<List<int>>();
         private static readonly List<Material> sMats = new List<Material>();
         private static int lastEntitySig = -1;
-        private static bool[] blockAtlasVertex = new bool[0], flashVertex = new bool[0];
+        private static bool[] blockAtlasVertex = new bool[0], flashVertex = new bool[0], litKeep = new bool[0];
         private static readonly List<int> flashIdx = new List<int>();
         private static Material flash;
 
@@ -503,18 +503,75 @@ namespace Killcraft
             if (sceneNew)
             {
                 sceneNew = false;
-                BuildBatches(sceneBuf, sceneLen, true, ref sceneGo, ref sceneMesh, "Minecraft scene");
+                BuildBatches(sceneBuf, sceneLen, true, ref sceneGo, ref sceneMesh, "Minecraft scene", sceneLit);
             }
             if (avatarNew)
             {
                 avatarNew = false;
-                BuildBatches(avatarBuf, avatarLen, false, ref avatarGo, ref avatarMesh, "Minecraft player");
+                BuildBatches(avatarBuf, avatarLen, false, ref avatarGo, ref avatarMesh, "Minecraft player", avatarLit);
                 if (avatarGo != null && !avatarShown)
                 {
                     avatarGo.SetActive(false);
                 }
             }
         }
+
+        // ULTRAKILL's light on Minecraft's player, mobs and particles (UkLighting): their colours as
+        // Minecraft lit them, kept, times the light where each vertex is now, every frame (a muzzle
+        // flash or an explosion lights them up while it lasts).
+        private sealed class Relit
+        {
+            private Mesh mesh;
+            private Vector3[] pos = new Vector3[0];
+            private Color32[] baseColors = new Color32[0], colors = new Color32[0];
+            private bool[] keep = new bool[0];
+            private int count;
+            private bool lit;
+
+            public void Keep(Mesh m, List<Vector3> v, List<Color32> c, bool[] unlit)
+            {
+                mesh = m;
+                count = v.Count;
+                if (pos.Length < count)
+                {
+                    int n = Math.Max(count, pos.Length * 2);
+                    pos = new Vector3[n];
+                    baseColors = new Color32[n];
+                    colors = new Color32[n];
+                    keep = new bool[n];
+                }
+                v.CopyTo(pos);
+                c.CopyTo(baseColors);
+                Array.Copy(unlit, keep, count);
+                lit = false;
+            }
+
+            public void Relight(GameObject go)
+            {
+                if (mesh == null || go == null || !go.activeSelf || count == 0 || count != mesh.vertexCount)
+                {
+                    return;
+                }
+                if (!UkLighting.On)
+                {
+                    if (lit)
+                    {
+                        mesh.SetColors(baseColors, 0, count);
+                        lit = false;
+                    }
+                    return;
+                }
+                Matrix4x4 m = go.transform.localToWorldMatrix;
+                for (int i = 0; i < count; i++)
+                {
+                    colors[i] = keep[i] ? baseColors[i] : UkLighting.Apply(baseColors[i], UkLighting.Shade(UkLighting.AtWorld(m.MultiplyPoint3x4(pos[i]))));
+                }
+                mesh.SetColors(colors, 0, count);
+                lit = true;
+            }
+        }
+
+        private static readonly Relit sceneLit = new Relit(), avatarLit = new Relit();
 
         private static byte[] avatarBuf = new byte[0];
         private static int avatarLen;
@@ -542,7 +599,7 @@ namespace Killcraft
             }
         }
 
-        private static void BuildBatches(byte[] buf, int len, bool withOrigin, ref GameObject go, ref Mesh mesh, string name)
+        private static void BuildBatches(byte[] buf, int len, bool withOrigin, ref GameObject go, ref Mesh mesh, string name, Relit lit)
         {
             if (go == null)
             {
@@ -586,6 +643,7 @@ namespace Killcraft
                 {
                     blockAtlasVertex = new bool[Math.Max(vertices, blockAtlasVertex.Length * 2)];
                     flashVertex = new bool[blockAtlasVertex.Length];
+                    litKeep = new bool[blockAtlasVertex.Length];
                 }
                 Array.Clear(blockAtlasVertex, 0, vertices);
                 for (int b = 0; b < batches; b++)
@@ -612,6 +670,8 @@ namespace Killcraft
                     // (Vertex colours multiply the texture, so white needs its own white material.)
                     flashVertex[i] = blockAtlasVertex[i] && (light & 0xFF) >= 15 && ((light >> 8) & 0xFF) >= 15;
                     sc.Add(flashVertex[i] ? new Color32(255, 255, 255, 255) : col);
+                    // (What glows, drawn at full light, stays as bright in ULTRAKILL's dark.)
+                    litKeep[i] = flashVertex[i] || (light & 0xFF) >= 15;
                 }
                 for (int b = 0; b < batches; b++)
                 {
@@ -661,6 +721,7 @@ namespace Killcraft
             sceneMesh.SetVertices(sv);
             sceneMesh.SetUVs(0, suv);
             sceneMesh.SetColors(sc);
+            lit.Keep(sceneMesh, sv, sc, litKeep);
             sceneMesh.subMeshCount = used;
             for (int i = 0; i < used; i++)
             {
@@ -951,6 +1012,8 @@ namespace Killcraft
                 return;
             }
             BuildScene();
+            sceneLit.Relight(sceneGo);
+            avatarLit.Relight(avatarGo);
             EnsureDynamic();
             dv.Clear();
             duv.Clear();
@@ -1036,6 +1099,13 @@ namespace Killcraft
             dynamicMesh.Clear();
             dynamicMesh.SetVertices(dv);
             dynamicMesh.SetUVs(0, duv);
+            if (UkLighting.On)
+            {
+                for (int i = 0; i < dc.Count; i++)
+                {
+                    dc[i] = UkLighting.Apply(dc[i], UkLighting.Shade(UkLighting.AtWorld(dv[i])));  // (Root is at the origin)
+                }
+            }
             dynamicMesh.SetColors(dc);
             dynamicMesh.subMeshCount = 2;
             dynamicMesh.SetTriangles(dSolid, 0);

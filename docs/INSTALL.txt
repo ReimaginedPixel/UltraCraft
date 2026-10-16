@@ -1,0 +1,19 @@
+ULTRA-CRAFT 2.0.0 - Minecraft inside ULTRAKILL
+https://github.com/ReimaginedPixel/UltraCraft
+(a fork of Killcraft by goonsn, built on SkyCraft by chasmlol)
+
+1. Install BepInEx 5 into ULTRAKILL (https://github.com/BepInEx/BepInEx/releases) and start the game once.
+2. Put this UltraCraft folder in ULTRAKILL\BepInEx\plugins\
+   (so you have ULTRAKILL\BepInEx\plugins\UltraCraft\UltraCraft.dll).
+   Don't unzip SkyCraft-Minecraft.zip, ULTRA-CRAFT unpacks it by itself, and keep killcraft-mc.jar
+   there too (Killcraft's Minecraft mod: ULTRA-CRAFT puts it into Minecraft by itself).
+   Had Killcraft? ULTRA-CRAFT replaces it and keeps its settings; you can delete the Killcraft folder.
+3. Start ULTRAKILL. The first time, sign in to your Microsoft account (one that owns
+   Minecraft: Java Edition) in the Prism Launcher window. Minecraft and Java download by themselves.
+4. Start any level. You start in Hybrid mode: X takes out Minecraft's hotbar to build, X again brings the guns back.
+
+F9: the mode menu (Hybrid, Minecraft, ULTRAKILL). F5: third person. O: Minecraft's menu (options, key binds).
+Settings: BepInEx\config\dev.killcraft.cfg
+
+SkyCraft-Minecraft.zip is from SkyCraft by chasmlol (https://github.com/chasmlol/SkyCraft), MIT license:
+see SkyCraft-LICENSE.txt and SkyCraft-THIRD-PARTY-NOTICES.md. ULTRA-CRAFT and Killcraft: MIT, see LICENSE.txt.

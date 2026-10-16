@@ -15,6 +15,11 @@ namespace Killcraft
         public static bool AllowDamage;
         // A Potion of ULTRAKILL: ULTRAKILL's movement runs although Minecraft has the player.
         public static bool UltrakillMoves;
+        // Hybrid's building: ULTRAKILL has V1 (its movement, health), but its guns, arm and hook are put
+        // away for Minecraft's hand, as while Minecraft has the player.
+        public static bool Building;
+
+        private static bool HandsAreMinecrafts => OwnsPlayer || Building;
 
         private static readonly AccessTools.FieldRef<NewMovement, Color> hurtTint = AccessTools.FieldRefAccess<NewMovement, Color>("currentColor");
 
@@ -40,24 +45,24 @@ namespace Killcraft
         private static bool MovementFixedUpdate() => !OwnsPlayer || UltrakillMoves;
 
         [HarmonyPatch(typeof(GunControl), "Update"), HarmonyPrefix]
-        private static bool GunUpdate() => !OwnsPlayer;
+        private static bool GunUpdate() => !HandsAreMinecrafts;
 
         [HarmonyPatch(typeof(FistControl), "Update"), HarmonyPrefix]
-        private static bool FistUpdate() => !OwnsPlayer;
+        private static bool FistUpdate() => !HandsAreMinecrafts;
 
         [HarmonyPatch(typeof(HookArm), "Update"), HarmonyPrefix]
-        private static bool HookUpdate() => !OwnsPlayer;
+        private static bool HookUpdate() => !HandsAreMinecrafts;
 
         [HarmonyPatch(typeof(WeaponWheel), "Update"), HarmonyPrefix]
-        private static bool WheelUpdate() => !OwnsPlayer;
+        private static bool WheelUpdate() => !HandsAreMinecrafts;
 
         // The cheat menu (Home / ~) and the cheat code: not while Minecraft has the player.
         [HarmonyPatch(typeof(CheatsController), "Update"), HarmonyPrefix]
-        private static bool CheatsUpdate() => !OwnsPlayer;
+        private static bool CheatsUpdate() => !HandsAreMinecrafts;
 
         // Esc closes an open Minecraft screen instead of pausing ULTRAKILL.
         [HarmonyPatch(typeof(OptionsManager), "Update"), HarmonyPrefix]
-        private static bool OptionsUpdate() => !(OwnsPlayer && McScreenOpen);
+        private static bool OptionsUpdate() => !(HandsAreMinecrafts && McScreenOpen) && !ModeMenu.IsOpen && !DeathScreen.IsOpen;  // (Esc closes the mode menu)
 
         // With a Minecraft screen open the mouse moves Minecraft's cursor, not the view.
         [HarmonyPatch(typeof(CameraController), "LateUpdate"), HarmonyPrefix]
@@ -69,7 +74,7 @@ namespace Killcraft
         [HarmonyPatch(typeof(CameraController), "LateUpdate"), HarmonyPostfix]
         private static void CameraAfter(CameraController __instance, Vector2 __state)
         {
-            if (OwnsPlayer && McScreenOpen)
+            if (HandsAreMinecrafts && McScreenOpen)
             {
                 __instance.rotationX = __state.x;
                 __instance.rotationY = __state.y;

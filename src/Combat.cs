@@ -19,6 +19,11 @@ namespace Killcraft
         // Which world Minecraft's player is in, as Killcraft's mod says (and when it last said so).
         public static bool DimensionNether;
         public static float DimensionAt = -100f;
+        // Minecraft's following player is still far from V1, walking there (Host).
+        public static bool FollowerAway;
+        // Minecraft's player died while it had V1 (Minecraft mode): Host shows the death screen, and
+        // its Respawn restarts ULTRAKILL from its checkpoint.
+        public static bool OwnedDeath;
         private static readonly List<(uint Id, Vector3 Pos)> loose = new List<(uint, Vector3)>();
         private static readonly byte[] looseName = Encoding.UTF8.GetBytes(WorldRender.LooseArrowName);
         private static readonly byte[] heldName = Encoding.UTF8.GetBytes(HeldItems.StateName);
@@ -39,6 +44,7 @@ namespace Killcraft
             maxHealth.Clear();
             names.Clear();
             hurtboxes.Clear();
+            OwnedDeath = false;
             Link.WriteActors(records, 0);
         }
 
@@ -293,7 +299,8 @@ namespace Killcraft
                     break;
                 case Proto.EvKcFollowerHurt:
                     // (Minecraft's damage is ULTRAKILL's / 5; ULTRAKILL's own hurt cooldown paces lava.)
-                    if (nm != null && !nm.dead && !Patches.OwnsPlayer && e.A > 0f)
+                    // (Not while it's still on its way to V1: what hurts it there isn't where V1 is.)
+                    if (nm != null && !nm.dead && !Patches.OwnsPlayer && !FollowerAway && e.A > 0f)
                     {
                         nm.GetHurt(Mathf.Max(1, Mathf.RoundToInt(e.A * 5f)), true);
                     }
@@ -314,6 +321,16 @@ namespace Killcraft
                     Explode(Coords.ToUnity(e.A, e.B, e.C), e.D);
                     break;
                 case Proto.EvPlayerDied:
+                    // Minecraft has V1 (Minecraft mode): a Minecraft death screen (Host, DeathScreen) is the
+                    // death screen. V1 isn't killed too (ULTRAKILL's own death sequence and checkpoint
+                    // restart over it was a glitchy back and forth); its Respawn restarts the checkpoint.
+                    // (In the Nether V1 still dies, for ULTRAKILL to put it back in the level.)
+                    if (Patches.OwnsPlayer && !Coords.InNether && nm != null && !nm.dead && !Coords.IsNetherUnity(nm.transform.position))
+                    {
+                        Plugin.Log.LogInfo("Minecraft player died: the death screen (V1 waits for Respawn)");
+                        OwnedDeath = true;
+                        break;
+                    }
                     if (nm != null && !nm.dead)
                     {
                         Plugin.Log.LogInfo("Minecraft player died: killing V1");
@@ -430,6 +447,31 @@ namespace Killcraft
             }
         }
 
+        // A kill with Minecraft's weapons (or fire, or a mob on your side) also gets a Minecraft name on
+        // ULTRAKILL's style meter, on top of what ULTRAKILL itself gives for the hit (Hit's hitter).
+        private static void KillStyle(EnemyIdentifier eid, uint flags, bool fire, bool projectile, bool thorns)
+        {
+            if (!Plugin.MinecraftStyle.Value || !(MonoSingleton.GetInstance(typeof(StyleHUD)) is StyleHUD style) || style == null)
+            {
+                return;
+            }
+            const string green = "<color=#5fd35f>";
+            string name = fire ? "<color=orange>SMELTED</color>"
+                : projectile ? green + "ARROWED</color>"
+                : thorns ? green + "THORNED</color>"
+                : (flags & Proto.HitCritical) != 0 ? "<color=#00ffffff>CRITICAL HIT</color>"
+                : (flags & Proto.HitSweep) != 0 ? green + "SWEPT</color>"
+                : green + "MINECRAFTED</color>";
+            try
+            {
+                style.AddPoints((flags & Proto.HitCritical) != 0 ? 80 : 50, name, null, eid);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"combat: style for a Minecraft kill failed: {ex.Message}");
+            }
+        }
+
         private static void Hit(EnemyIdentifier eid, in McEvent e)
         {
             float damage = e.A * Plugin.DamageToUltrakill.Value;
@@ -452,9 +494,14 @@ namespace Killcraft
             bool thorns = !projectile && !fire && e.FormId == lastHurtBy && Time.unscaledTime - lastHurtTime < 0.5f
                 && Time.unscaledTime - InputForward.LastAttackPress > 0.5f;
             eid.hitter = fire ? "fire" : projectile ? "revolver" : thorns ? "thorns" : MeleeHitter();
+            bool wasAlive = !eid.dead;
             try
             {
                 eid.DeliverDamage(eid.gameObject, force, point, damage, false, 0f, null);
+                if (wasAlive && eid.dead)
+                {
+                    KillStyle(eid, e.Flags, fire, projectile, thorns);
+                }
                 // Minecraft fire (fire and lava blocks, Fire Aspect, Flame arrows) also sets it alight
                 // in ULTRAKILL: its flames, and a couple of seconds of its own burning after.
                 if (fire && !eid.dead)
